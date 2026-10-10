@@ -1,0 +1,16 @@
+# Caddyfile cho P2P File Sharing
+# Caddy tự động xin chứng chỉ SSL/TLS qua Let's Encrypt và tự nâng cấp WebSocket.
+# Thay thế <domain-cua-ban> bằng domain hoặc subdomain DuckDNS của bạn (ví dụ: myp2p.duckdns.org)
+
+{$DOMAIN:localhost} {
+    encode gzip zstd
+
+    # Chuyển tiếp toàn bộ HTTP và WebSocket về Node.js chạy nội bộ tại cổng 3000
+    reverse_proxy 127.0.0.1:3000 {
+        # Đảm bảo header X-Forwarded-For được gửi để server thực hiện rate-limiting chính xác
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

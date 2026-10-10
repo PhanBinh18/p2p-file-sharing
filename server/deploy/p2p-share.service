@@ -1,0 +1,26 @@
+[Unit]
+Description=P2P File Sharing Web & Signaling Server (Node.js)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/p2p-share/server
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=CLIENT_DIR=../client
+Environment=RELAY_DIR=./tmp/relay
+Environment=MAX_FILE_SIZE=104857600
+Environment=RELAY_TTL_MS=600000
+Environment=JOIN_TIMEOUT_MS=60000
+Environment=MAX_ROOMS=200
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2p-share
+
+[Install]
+WantedBy=multi-user.target
