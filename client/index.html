@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2P File Sharing – WebRTC & Server Benchmark</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1>P2P File Sharing</h1>
+          <p class="subtitle">Truyền file P2P qua WebRTC &amp; So sánh hiệu năng với Server Relay</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-toggle-log" class="btn btn-secondary btn-sm" title="Mở nhật ký WebRTC / Signaling">
+          📋 Nhật ký kỹ thuật <span id="log-badge-count" class="badge badge-pill">0</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Secure Context Warning -->
+    <div id="secure-context-warning" class="alert alert-danger hidden">
+      ⚠️ <strong>Cảnh báo môi trường:</strong> <code>crypto.subtle</code> không khả dụng trên ngữ cảnh không an toàn.
+      Vui lòng truy cập qua <strong>HTTPS</strong> hoặc <strong>localhost</strong> để tính toán mã băm SHA-256 và mở WebRTC.
+    </div>
+
+    <!-- Stepper 7 bước -->
+    <nav class="stepper-container" aria-label="Tiến trình kết nối">
+      <div id="connection-stepper" class="stepper">
+        <div class="stepper-item" data-step="1">
+          <div class="step-circle">1</div>
+          <div class="step-label">Tạo phòng</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="2">
+          <div class="step-circle">2</div>
+          <div class="step-label">Xin vào</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="3">
+          <div class="step-circle">3</div>
+          <div class="step-label">Duyệt vào</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="4">
+          <div class="step-circle">4</div>
+          <div class="step-label">Offer SDP</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="5">
+          <div class="step-circle">5</div>
+          <div class="step-label">Answer SDP</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="6">
+          <div class="step-circle">6</div>
+          <div class="step-label">ICE Candidate</div>
+        </div>
+        <div class="stepper-line"></div>
+        <div class="stepper-item" data-step="7">
+          <div class="step-circle">7</div>
+          <div class="step-label">P2P Sẵn sàng</div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- 1. Màn hình LOBBY -->
+      <section id="screen-lobby" class="screen card screen-lobby">
+        <h2 class="card-title">Bắt đầu kết nối</h2>
+        <p class="text-muted mb-4">Nhập biệt danh của bạn để tạo phòng mới hoặc tham gia phòng đã có.</p>
+
+        <div class="form-group mb-4">
+          <label for="input-nickname">Biệt danh của bạn (1–20 ký tự):</label>
+          <input type="text" id="input-nickname" class="form-control" placeholder="Ví dụ: Alice, Bob..." maxlength="20" autofocus>
+        </div>
+
+        <div class="lobby-grid">
+          <!-- Tạo phòng -->
+          <div class="lobby-box">
+            <h3>Tạo phòng mới</h3>
+            <p class="text-muted">Bạn sẽ là Chủ phòng (Host) và nhận một mã phòng 6 ký tự để chia sẻ cho người khác.</p>
+            <button id="btn-create-room" class="btn btn-primary btn-block">Tạo phòng</button>
+          </div>
+
+          <div class="divider-vertical"><span>HOẶC</span></div>
+
+          <!-- Vào phòng -->
+          <div class="lobby-box">
+            <h3>Tham gia phòng có sẵn</h3>
+            <p class="text-muted">Nhập mã phòng 6 ký tự được cung cấp từ chủ phòng.</p>
+            <div class="input-group mb-3">
+              <input type="text" id="input-room-code" class="form-control text-uppercase" placeholder="Mã 6 ký tự" maxlength="6">
+              <button id="btn-join-room" class="btn btn-success">Vào phòng</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Màn hình WAITING HOST (Chủ phòng chờ khách) -->
+      <section id="screen-waiting-host" class="screen card screen-waiting hidden">
+        <div class="text-center">
+          <div class="waiting-spinner"></div>
+          <h2>Phòng đã được tạo thành công!</h2>
+          <p class="text-muted">Hãy chia sẻ mã phòng dưới đây cho người bạn muốn kết nối:</p>
+
+          <div class="room-code-display-wrap">
+            <span id="display-host-room-code" class="display-code">------</span>
+            <button id="btn-copy-room-code" class="btn btn-secondary btn-sm" title="Sao chép mã phòng">📋 Sao chép</button>
+          </div>
+
+          <div class="status-indicator-box">
+            <span class="pulsing-dot"></span> Đang chờ đối tác yêu cầu vào phòng...
+          </div>
+
+          <button id="btn-host-cancel" class="btn btn-outline-danger mt-4">Hủy và đóng phòng</button>
+        </div>
+      </section>
+
+      <!-- 3. Màn hình WAITING GUEST (Khách chờ chủ phòng duyệt) -->
+      <section id="screen-waiting-guest" class="screen card screen-waiting hidden">
+        <div class="text-center">
+          <div class="waiting-spinner"></div>
+          <h2>Đã gửi yêu cầu vào phòng <span id="display-guest-room-code" class="text-primary">------</span></h2>
+          <div class="status-indicator-box">
+            <span class="pulsing-dot"></span> Đang chờ chủ phòng xét duyệt yêu cầu của bạn...
+          </div>
+          <p class="text-muted mt-3">Chủ phòng sẽ nhận được thông báo pop-up để cho phép hoặc từ chối.</p>
+          <button id="btn-guest-cancel" class="btn btn-outline-danger mt-4">Hủy yêu cầu</button>
+        </div>
+      </section>
+
+      <!-- 4. Màn hình CONNECTING (Đang bắt tay WebRTC) -->
+      <section id="screen-connecting" class="screen card screen-connecting hidden">
+        <div class="text-center">
+          <div class="connecting-loader"></div>
+          <h2>Đang thiết lập kênh trực tiếp P2P</h2>
+          <p id="connecting-status-text" class="status-text text-muted">Đang trao đổi SDP và ứng viên ICE...</p>
+          <button id="btn-connecting-cancel" class="btn btn-outline-danger mt-3">Hủy kết nối</button>
+        </div>
+      </section>
+
+      <!-- 5. Màn hình CONNECTED (Kênh truyền file P2P & Benchmark) -->
+      <section id="screen-connected" class="screen screen-connected hidden">
+        <!-- Status Bar -->
+        <div class="card status-bar-card mb-4">
+          <div class="status-bar-header">
+            <div class="peer-info">
+              <span class="status-dot-online"></span>
+              <span>Đang kết nối cùng: <strong id="connected-partner-name">Đối tác</strong></span>
+              <span class="room-tag">Phòng: <code id="connected-room-code">------</code></span>
+            </div>
+            <button id="btn-leave-room" class="btn btn-outline-danger btn-sm">Rời phòng</button>
+          </div>
+          <div class="connection-telemetry">
+            <div class="telemetry-item">
+              <span class="telemetry-label">Loại đường truyền:</span>
+              <span id="connected-conn-type" class="badge badge-lan">Đang đo...</span>
+            </div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Độ trễ (RTT):</span>
+              <strong id="connected-rtt">-- ms</strong>
+            </div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Thời gian bắt tay:</span>
+              <strong id="connected-setup-time">-- ms</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- File Sharing Card -->
+        <div class="card file-sharing-card mb-4">
+          <h2 class="card-title">Chia sẻ dữ liệu</h2>
+
+          <!-- Drop zone -->
+          <div id="file-drop-zone" class="file-drop-zone">
+            <div class="drop-zone-icon">📁</div>
+            <p class="drop-zone-text">Kéo thả file vào đây hoặc <label for="file-input" class="file-browse-link">chọn từ thiết bị</label></p>
+            <p class="text-muted small">Hỗ trợ mọi định dạng (Giới hạn tối đa: 100 MB)</p>
+            <input type="file" id="file-input" class="hidden-file-input">
+          </div>
+
+          <!-- Selected File Details -->
+          <div id="selected-file-card" class="selected-file-card hidden">
+            <div class="selected-file-info">
+              <div class="file-icon">📄</div>
+              <div>
+                <h4 id="selected-file-name" class="file-name">tên_file.bin</h4>
+                <div class="file-meta">
+                  <span id="selected-file-size">0 MB</span> • <span id="selected-file-sha">Đang tính SHA-256...</span>
+                </div>
+              </div>
+            </div>
+            <button id="btn-remove-file" class="btn btn-text btn-sm" title="Bỏ chọn file">✕</button>
+          </div>
+
+          <!-- Options & Actions -->
+          <div class="transfer-options-bar mt-3">
+            <label class="custom-checkbox">
+              <input type="checkbox" id="checkbox-auto-accept" checked>
+              <span class="checkmark"></span>
+              Tự động nhận file (Khuyên dùng khi chạy chế độ so sánh tốc độ)
+            </label>
+          </div>
+
+          <div class="transfer-action-buttons mt-3">
+            <button id="btn-send-p2p" class="btn btn-primary" disabled>
+              ⚡ Gửi file P2P (WebRTC)
+            </button>
+            <button id="btn-send-relay" class="btn btn-secondary" disabled>
+              ☁️ Gửi qua Server (Relay)
+            </button>
+
+            <div class="benchmark-btn-group">
+              <select id="benchmark-iterations" class="form-select form-select-sm" title="Số lần lặp lại">
+                <option value="1">Lặp 1 lần</option>
+                <option value="3" selected>Lặp 3 lần (Lấy trung vị)</option>
+                <option value="5">Lặp 5 lần (Lấy trung vị)</option>
+              </select>
+              <button id="btn-benchmark" class="btn btn-warning" disabled>
+                📊 So sánh P2P vs Server
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transfer Progress Card -->
+        <div id="transfer-progress-card" class="card progress-card hidden mb-4">
+          <div class="progress-header">
+            <h3 id="transfer-progress-title">Đang truyền file...</h3>
+            <span id="transfer-percent-text" class="progress-percent">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div id="transfer-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-footer mt-2">
+            <span id="transfer-stats-text" class="text-muted small">0 MB / 0 MB • 0 MB/s</span>
+            <button id="btn-cancel-transfer" class="btn btn-outline-danger btn-sm">Hủy</button>
+          </div>
+        </div>
+
+        <!-- Transfer Result Card -->
+        <div id="transfer-result-card" class="card result-card hidden mb-4">
+          <div class="result-header">
+            <h3 id="transfer-result-title">Hoàn tất truyền file</h3>
+            <span id="transfer-result-badge" class="badge badge-success">✅ Toàn vẹn</span>
+          </div>
+          <div id="transfer-result-details" class="result-body mt-3"></div>
+          <div class="result-footer mt-3">
+            <button id="btn-save-received-file" class="btn btn-success hidden">💾 Lưu file về máy</button>
+          </div>
+        </div>
+
+        <!-- Benchmark Comparison Result Card -->
+        <div id="benchmark-result-card" class="card benchmark-card hidden mb-4">
+          <h2 class="card-title">Kết quả so sánh hiệu năng (P2P vs Server)</h2>
+          <div id="benchmark-result-summary" class="mb-3"></div>
+
+          <!-- Visual speed bars -->
+          <div class="benchmark-bars-container mb-4">
+            <div class="bar-group">
+              <label>P2P (WebRTC):</label>
+              <div class="bar-track">
+                <div id="benchmark-p2p-bar" class="bar-fill bar-p2p" style="width: 5%">P2P</div>
+              </div>
+            </div>
+            <div class="bar-group mt-2">
+              <label>Server Relay:</label>
+              <div class="bar-track">
+                <div id="benchmark-relay-bar" class="bar-fill bar-relay" style="width: 5%">Server Relay</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Runs Table -->
+          <div class="table-responsive">
+            <table class="benchmark-table">
+              <thead>
+                <tr>
+                  <th>Lượt đo</th>
+                  <th>P2P (Thời gian / Tốc độ)</th>
+                  <th>Server Relay (Upload + Download)</th>
+                  <th>Tỉ lệ chênh lệch</th>
+                </tr>
+              </thead>
+              <tbody id="benchmark-table-body"></tbody>
+            </table>
+          </div>
+
+          <div id="benchmark-server-stats" class="mt-3"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Collapsible Log Panel -->
+    <aside id="log-container" class="log-panel collapsed">
+      <div class="log-header">
+        <div class="log-title">
+          <span>🛠 Nhật ký WebRTC &amp; Signaling</span>
+        </div>
+        <div class="log-controls">
+          <button id="btn-export-log" class="btn btn-text btn-xs" title="Tải file txt">Xuất log</button>
+          <button id="btn-clear-log" class="btn btn-text btn-xs" title="Xóa toàn bộ log">Xóa</button>
+        </div>
+      </div>
+      <ul id="log-list" class="log-list"></ul>
+    </aside>
+
+    <!-- Modals -->
+    <!-- Modal 1: Join Request Dialog -->
+    <dialog id="modal-join-request" class="custom-modal">
+      <div class="modal-content">
+        <h3>Yêu cầu vào phòng</h3>
+        <p>Người dùng <strong id="join-request-nick" class="text-primary">Alice</strong> đang xin phép vào phòng của bạn.</p>
+        <p class="text-muted small">Nếu đồng ý, quá trình bắt tay WebRTC sẽ tự động diễn ra ngay lập tức.</p>
+        <div class="modal-actions mt-4">
+          <button id="btn-join-reject" class="btn btn-outline-danger">Từ chối</button>
+          <button id="btn-join-accept" class="btn btn-success">Cho phép</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Modal 2: File Transfer Request Dialog -->
+    <dialog id="modal-file-request" class="custom-modal">
+      <div class="modal-content">
+        <h3>Đối tác muốn gửi file</h3>
+        <p>Đối tác muốn truyền file: <strong id="file-request-name">tailieu.pdf</strong> (<span id="file-request-size">10 MB</span>)</p>
+        <p class="text-muted small">Mã SHA-256 đối tác cung cấp: <code id="file-request-sha">...</code></p>
+        <div class="modal-actions mt-4">
+          <button id="btn-file-reject" class="btn btn-outline-danger">Từ chối</button>
+          <button id="btn-file-accept" class="btn btn-primary">Nhận file</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Modal 3: Details Inspector (SDP / Candidate) -->
+    <dialog id="modal-details" class="custom-modal modal-lg">
+      <div class="modal-content">
+        <h3 id="modal-details-title">Chi tiết kỹ thuật</h3>
+        <div id="modal-details-content" class="modal-scroll-body"></div>
+        <div class="modal-actions mt-3">
+          <button id="btn-modal-details-close" class="btn btn-secondary">Đóng</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <!-- Load JavaScript ES Modules -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
