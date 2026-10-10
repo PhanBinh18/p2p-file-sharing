@@ -1,0 +1,60 @@
+# ==============================================================================
+# Git Ignore Rules cho Dự án P2P File Sharing (WebRTC & Server Relay)
+# ==============================================================================
+
+# 1. Thư mục phụ thuộc (Dependencies)
+node_modules/
+*/node_modules/
+
+# 2. File môi trường & cấu hình bảo mật (Environment Variables)
+.env
+.env.local
+.env.*.local
+*.env
+# Giữ lại file mẫu .env.example
+!.env.example
+!server/.env.example
+
+# 3. File tạm & Thư mục Relay tải file (Temporary & Relay Storage)
+tmp/
+server/tmp/
+server/tmp/relay/
+*.tmp
+*.temp
+
+# 4. File nhật ký & Log của tiến trình
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 5. File nhật ký WebRTC xuất từ giao diện Client
+p2p-webrtc-logs-*.txt
+
+# 6. Thư mục & File của hệ điều hành (OS generated files)
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# 7. Cấu hình IDE & Text Editor
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.sublime-project
+*.sublime-workspace
+
+# 8. Báo cáo kiểm thử & Code Coverage
+coverage/
+.nyc_output/
