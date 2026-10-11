@@ -40,7 +40,11 @@ export class PeerManager {
     }
 
     if (!iceServers || iceServers.length === 0) {
-      iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+      iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' }
+      ];
     }
 
     if (this.onLog) {
@@ -170,10 +174,13 @@ export class PeerManager {
     if (this.onLog) this.onLog('PC', 'Khách nhận Offer SDP, đang gán RemoteDescription...', { sdp, type: 'offer' });
 
     await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
-    await this._flushIceCandidateQueue();
 
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
+
+    // QUAN TRỌNG: Chỉ xả hàng đợi ICE candidates SAU KHI đã setLocalDescription(answer)
+    // Nếu xả trước khi có localDescription, trình duyệt sẽ lỗi InvalidState hoặc bỏ rơi candidate
+    await this._flushIceCandidateQueue();
 
     if (this.onLog) {
       this.onLog('PC', 'Đã gán LocalDescription (Answer) và gửi tới Chủ phòng', { sdp: answer.sdp, type: answer.type });
@@ -198,25 +205,27 @@ export class PeerManager {
    * Xử lý ICE candidate từ đối tác (kèm hàng đợi chống race condition)
    */
   async handleRemoteIceCandidate(candidateObj) {
-    if (!candidateObj || !candidateObj.candidate) return;
+    if (!candidateObj) return;
 
-    if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) {
-      // Đưa vào hàng đợi nếu remote description chưa sẵn sàng
-      if (this.onLog) this.onLog('ICE', 'RemoteDescription chưa set, đưa candidate vào hàng đợi...');
+    // Đảm bảo cả RemoteDescription và LocalDescription đều đã sẵn sàng trước khi addIceCandidate
+    if (!this.pc || !this.pc.remoteDescription || !this.pc.localDescription) {
+      if (this.onLog) this.onLog('ICE', 'Remote hoặc Local Description chưa sẵn sàng, đưa candidate vào hàng đợi...');
       this.iceCandidateQueue.push(candidateObj);
       return;
     }
 
     try {
-      await this.pc.addIceCandidate(new RTCIceCandidate(candidateObj));
-      if (this.onLog) this.onLog('ICE', `Đã thêm remote ICE candidate [${candidateObj.candidate.slice(0, 40)}...]`);
+      if (candidateObj.candidate || candidateObj.candidate === '') {
+        await this.pc.addIceCandidate(new RTCIceCandidate(candidateObj));
+        if (this.onLog) this.onLog('ICE', `Đã thêm remote ICE candidate [${(candidateObj.candidate || 'end-of-candidates').slice(0, 40)}]`);
+      }
     } catch (err) {
       if (this.onLog) this.onLog('ICE', `Lỗi thêm remote ICE candidate: ${err.message}`);
     }
   }
 
   /**
-   * Đẩy toàn bộ candidate trong hàng đợi vào PeerConnection sau khi setRemoteDescription
+   * Đẩy toàn bộ candidate trong hàng đợi vào PeerConnection sau khi descriptions sẵn sàng
    */
   async _flushIceCandidateQueue() {
     if (this.iceCandidateQueue.length === 0) return;
@@ -227,7 +236,9 @@ export class PeerManager {
 
     for (const cand of queue) {
       try {
-        await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+        if (cand.candidate || cand.candidate === '') {
+          await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+        }
       } catch (err) {
         if (this.onLog) this.onLog('ICE', `Lỗi xả ICE candidate: ${err.message}`);
       }
