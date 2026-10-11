@@ -192,6 +192,8 @@ export class UIController {
    * 1: Tạo phòng, 2: Xin vào, 3: Chủ phòng duyệt, 4: Offer, 5: Answer, 6: ICE, 7: DataChannel mở
    */
   setStepperStep(stepNumber) {
+    // Không lùi về bước nhỏ hơn nếu đang ở bước cao hơn (tránh race condition khi ICE candidate đến trước Answer)
+    if (stepNumber < this.stepperStep && stepNumber !== 0) return;
     this.stepperStep = stepNumber;
     if (!this.els.stepper) return;
 
