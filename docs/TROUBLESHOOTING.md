@@ -82,3 +82,67 @@ Tài liệu này ghi lại toàn bộ quá trình phát hiện sự cố, phân 
   * Khi mạng Wi-Fi của người dùng chặn Multicast mDNS và chặn NAT Loopback, WebRTC sẽ tự động kích hoạt candidate loại `relay`.
   * Lưu lượng file vẫn được mã hóa đầu-cuối (E2EE) bằng DTLS/SCTP, TURN server chỉ đóng vai trò chuyển tiếp UDP trung gian với độ trễ thấp và băng thông tối đa của VPS.
   * Người dùng trên bất kỳ thiết bị nào (Chrome, Safari iOS, Android) đều kết nối thông suốt 100% mà không cần cấu hình thêm bất kỳ cài đặt trình duyệt nào.
+
+---
+
+## 📅 Ngày: 12/10/2026 – Đổi Domain Mới, Dựng Coturn TURN Server & Xử Lý Symmetric NAT
+
+### 1. Sự Cố Khi Đổi Tên Miền DuckDNS Mới (`p2pfilesharing.duckdns.org`)
+* **Hiện tượng:** Sau khi tạo domain mới trên DuckDNS và trỏ về IP VPS, truy cập HTTPS vào domain mới bị lỗi SSL / Connection Refused.
+* **Nguyên nhân:** Caddy Reverse Proxy trên VPS vẫn đang bind theo domain cũ (`p2p-file-sharing.duckdns.org`), chưa cập nhật cấu hình nên Caddy chưa xin cấp chứng chỉ HTTPS (Let's Encrypt / ZeroSSL) cho domain mới.
+* **Cách khắc phục:**
+  1. Cập nhật file `/etc/caddy/Caddyfile`: Thay domain cũ bằng `p2pfilesharing.duckdns.org`.
+  2. Khởi động lại Caddy: `sudo systemctl restart caddy`. Caddy tự động hoàn tất TLS challenge và cấp SSL tức thì.
+
+---
+
+### 2. Sự Cố ICE Failed Khi Kết Nối Khác Mạng Wi-Fi (Symmetric NAT)
+* **Hiện tượng:** 
+  * Khi 2 thiết bị kết nối ở **2 mạng khác nhau** (ví dụ 1 máy dùng 4G Viettel, 1 máy dùng Wi-Fi; hoặc 2 mạng Wi-Fi khác nhau), Signaling WebSocket thành công 100%, nhưng ICE Connection chuyển trạng thái: `checking` ➡️ `disconnected` ➡️ `failed`.
+  * Kiểm tra qua `chrome://webrtc-internals`: Không có bất kỳ candidate loại `relay` nào được sinh ra, chỉ có `stun:...`.
+* **Phân tích nguyên nhân:**
+  * Các mạng di động 4G/5G hoặc mạng gia đình áp dụng CGNAT đều là loại **Symmetric NAT (NAT Đối Xứng)**.
+  * Router liên tục đổi ngẫu nhiên port ngoại vi (External Mapping Port) cho từng IP đích. Các gói tin UDP gửi trực tiếp giữa 2 máy bị firewall của 2 router drop hoàn toàn.
+  * Trong điều kiện Symmetric NAT, **STUN thuần túy bất lực 100%**. WebRTC bắt buộc phải có **TURN Server** mới có thể đục lỗ hoặc chuyển tiếp dữ liệu.
+
+---
+
+### 3. Quá Trình Triển Khai & Khắc Phục Lỗi Coturn Trên Oracle Cloud VPS
+
+#### A. Mở cổng Firewall (Oracle Cloud Security List & Linux iptables)
+* **Mở trên Oracle Cloud Ingress Rules:**
+  * Port `3478` (UDP & TCP) – Cổng điều khiển STUN/TURN.
+  * Dải port `49152-65535` (UDP) – Dải port chuyển tiếp WebRTC relay.
+* **Mở trên Linux iptables:**
+  * Đưa các rule `ACCEPT` lên vị trí đầu tiên của bảng `INPUT` để tránh bị các rule chặn mặc định của Oracle Linux drop:
+    ```bash
+    sudo iptables -I INPUT 1 -p udp --dport 3478 -j ACCEPT
+    sudo iptables -I INPUT 1 -p tcp --dport 3478 -j ACCEPT
+    sudo iptables -I INPUT 1 -p udp --dport 49152:65535 -j ACCEPT
+    ```
+
+#### B. Khắc phục lỗi Coturn không bind vào card mạng chính
+* **Lỗi phát hiện:** Ban đầu Coturn chỉ bind vào `127.0.0.1` và `172.17.0.1` (docker bridge), khiến gói tin từ Internet bên ngoài vào port 3478 không tới được tiến trình.
+* **Khắc phục:** Bổ sung cấu hình `listening-ip=0.0.0.0` trong `/etc/turnserver.conf` để Coturn lắng nghe trên toàn bộ interface mạng của VPS.
+
+#### C. Khắc phục lỗi `403: Forbidden IP` khi đục lỗ WebRTC qua Coturn
+* **Hiện tượng trong log Coturn:** 
+  ```text
+  ALLOCATE processed, success
+  incoming packet CREATE_PERMISSION processed, error 403: Forbidden IP
+  ```
+* **Nguyên nhân gốc rễ:** 
+  * Theo mặc định RFC 5766, Coturn tự động chặn chuyển tiếp tới các dải IP Private/Loopback (`10.0.0.0/8`, `127.0.0.0/8`).
+  * Máy ảo Oracle Cloud có IP Private nội bộ là `10.0.0.116`, hoặc peer gửi candidate private, khiến Coturn chặn quyền (Forbidden IP).
+* **Khắc phục triệt để:**
+  * Trong `/etc/turnserver.conf`, cấu hình ánh xạ rõ ràng: `external-ip=168.107.75.167/10.0.0.116`.
+  * Kích hoạt cờ `allow-loopback-peers`.
+  * Khởi động lại Coturn: `sudo systemctl restart coturn`.
+
+---
+
+### 4. Kết Quả Sau Cùng: Xuất Hiện Ứng Viên `prflx` (Peer Reflexive)
+* **Kết quả thực tế:**
+  * Sau khi cấu hình Coturn hoàn tất, hai thiết bị khác mạng đã kết nối P2P thành công mỹ mãn.
+  * Trạng thái cặp candidate được WebRTC lựa chọn là **`prflx` (Peer Reflexive)**: Nhờ có TURN Server đóng vai trò trung gian "mồi" ban đầu, hai máy đã tự phát hiện ra một đường hầm UDP trực tiếp xuyên qua lớp Symmetric NAT của router.
+  * Kênh dữ liệu **DataChannel mở ngay lập tức**, truyền file trực tiếp với tốc độ tối đa của đường truyền mà không bị nghẽn mạng!
