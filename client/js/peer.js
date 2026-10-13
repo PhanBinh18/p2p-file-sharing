@@ -2,6 +2,8 @@
  * Quản lý RTCPeerConnection, DataChannel, ICE Candidate và WebRTC Stats
  */
 
+import { parseIceCandidate } from './util.js';
+
 export class PeerManager {
   constructor({ isHost, signaling, onDataChannelOpen, onDataChannelClose, onLog, onStatsUpdate, onConnectionStateChange }) {
     this.isHost = isHost;
@@ -22,6 +24,7 @@ export class PeerManager {
     this.activeCandidateType = null;
     this.hasConnected = false;
     this._failureHandled = false;
+    this._lastLoggedPairId = null;
   }
 
   /**
@@ -234,6 +237,29 @@ export class PeerManager {
   }
 
   /**
+   * Ghi log chi tiết khi thêm Remote ICE Candidate
+   */
+  _logRemoteCandidate(candidateObj) {
+    if (!this.onLog || !candidateObj) return;
+    if (!candidateObj.candidate) {
+      this.onLog('ICE', 'Đối tác đã gửi xong toàn bộ ICE candidates (end-of-candidates)');
+      return;
+    }
+    const parsed = parseIceCandidate(candidateObj.candidate);
+    if (parsed && parsed.type && parsed.type !== 'unknown') {
+      this.onLog(
+        'ICE',
+        `Nhận remote candidate: [${parsed.type}] ${(parsed.protocol || 'udp').toLowerCase()} ${parsed.ip}:${parsed.port}`,
+        { candidate: candidateObj.candidate, ...parsed }
+      );
+    } else {
+      this.onLog('ICE', `Đã thêm remote ICE candidate [${candidateObj.candidate.slice(0, 45)}...]`, {
+        candidate: candidateObj.candidate
+      });
+    }
+  }
+
+  /**
    * Xử lý ICE candidate từ đối tác (kèm hàng đợi chống race condition)
    */
   async handleRemoteIceCandidate(candidateObj) {
@@ -249,7 +275,7 @@ export class PeerManager {
     try {
       if (candidateObj.candidate || candidateObj.candidate === '') {
         await this.pc.addIceCandidate(new RTCIceCandidate(candidateObj));
-        if (this.onLog) this.onLog('ICE', `Đã thêm remote ICE candidate [${(candidateObj.candidate || 'end-of-candidates').slice(0, 40)}]`);
+        this._logRemoteCandidate(candidateObj);
       }
     } catch (err) {
       if (this.onLog) this.onLog('ICE', `Lỗi thêm remote ICE candidate: ${err.message}`);
@@ -270,6 +296,7 @@ export class PeerManager {
       try {
         if (cand.candidate || cand.candidate === '') {
           await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+          this._logRemoteCandidate(cand);
         }
       } catch (err) {
         if (this.onLog) this.onLog('ICE', `Lỗi xả ICE candidate: ${err.message}`);
@@ -342,18 +369,47 @@ export class PeerManager {
       let localCand = null;
       let remoteCand = null;
 
-      // Tìm candidate-pair đang được dùng (nominated và state === succeeded)
+      // 1. Chuẩn W3C: lấy chính xác cặp candidate đang active từ transport.selectedCandidatePairId
       stats.forEach(report => {
-        if (report.type === 'candidate-pair' && (report.nominated || report.state === 'succeeded' || report.selected)) {
-          selectedPair = report;
+        if (report.type === 'transport' && report.selectedCandidatePairId) {
+          const pair = stats.get(report.selectedCandidatePairId);
+          if (pair) selectedPair = pair;
         }
       });
 
+      // 2. Fallback: tìm pair có selected === true
       if (!selectedPair) {
-        // Fallback: tìm pair bất kỳ có bytesSent > 0
         stats.forEach(report => {
-          if (report.type === 'candidate-pair' && report.bytesSent > 0) {
+          if (report.type === 'candidate-pair' && report.selected) {
             selectedPair = report;
+          }
+        });
+      }
+
+      // 3. Fallback: tìm pair có nominated === true && state === 'succeeded' có lưu lượng truyền cao nhất
+      if (!selectedPair) {
+        let bestTraffic = -1;
+        stats.forEach(report => {
+          if (report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') {
+            const traffic = (report.bytesSent || 0) + (report.bytesReceived || 0);
+            if (traffic > bestTraffic) {
+              bestTraffic = traffic;
+              selectedPair = report;
+            }
+          }
+        });
+      }
+
+      // 4. Fallback cuối: tìm pair có state === 'succeeded' hoặc bytesSent > 0
+      if (!selectedPair) {
+        let bestTraffic = 0;
+        stats.forEach(report => {
+          if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.bytesSent > 0)) {
+            const traffic = (report.bytesSent || 0) + (report.bytesReceived || 0);
+            if (!selectedPair || traffic >= bestTraffic) {
+              bestTraffic = traffic;
+              selectedPair = report;
+            }
           }
         });
       }
@@ -363,18 +419,41 @@ export class PeerManager {
         remoteCand = stats.get(selectedPair.remoteCandidateId);
       }
 
-      let candidateType = localCand?.candidateType || 'unknown';
+      const localType = localCand?.candidateType || 'unknown';
+      const remoteType = remoteCand?.candidateType || 'unknown';
+
+      // Xác định loại đường truyền thực tế dựa trên cả Local và Remote candidate
+      let candidateType = 'unknown';
       let typeLabel = 'Đang xác định...';
-      if (candidateType === 'host') typeLabel = 'Mạng nội bộ (LAN)';
-      else if (candidateType === 'srflx') typeLabel = 'Public IP qua STUN';
-      else if (candidateType === 'relay') typeLabel = 'Qua TURN';
-      else if (candidateType === 'prflx') typeLabel = 'Peer Reflexive';
+
+      if (localType === 'relay' || remoteType === 'relay') {
+        candidateType = 'relay';
+        typeLabel = 'Qua TURN';
+      } else if (localType === 'srflx' || remoteType === 'srflx') {
+        candidateType = 'srflx';
+        typeLabel = 'Public IP qua STUN';
+      } else if (localType === 'prflx' || remoteType === 'prflx') {
+        candidateType = 'prflx';
+        typeLabel = 'Peer Reflexive';
+      } else if (localType === 'host' && remoteType === 'host') {
+        candidateType = 'host';
+        typeLabel = 'Mạng nội bộ (LAN)';
+      } else if (localType !== 'unknown') {
+        candidateType = localType;
+        typeLabel = localType;
+      }
 
       this.activeCandidateType = candidateType;
 
       const rttMs = selectedPair?.currentRoundTripTime != null
         ? Math.round(selectedPair.currentRoundTripTime * 1000)
         : (selectedPair?.roundTripTime ? Math.round(selectedPair.roundTripTime * 1000) : null);
+
+      // Ghi log chẩn đoán chi tiết khi tìm thấy (hoặc đổi) cặp ICE candidate được chọn
+      if (selectedPair && selectedPair.id !== this._lastLoggedPairId) {
+        this._lastLoggedPairId = selectedPair.id;
+        this._logIcePairDiagnostics(stats, selectedPair, localCand, remoteCand, candidateType, typeLabel, rttMs);
+      }
 
       const statsData = {
         candidateType,
@@ -392,6 +471,111 @@ export class PeerManager {
       }
     } catch (e) {
       // bỏ qua lỗi stats khi PC đóng
+    }
+  }
+
+  /**
+   * Phân tích toàn bộ các cặp ICE Candidate đã thử nghiệm và giải thích lý do chọn đường truyền (LAN / STUN / TURN)
+   */
+  _logIcePairDiagnostics(stats, selectedPair, localCand, remoteCand, candidateType, typeLabel, rttMs) {
+    if (!this.onLog) return;
+
+    const formatCandAddr = (c) => {
+      if (!c) return 'N/A';
+      const ip = c.address || c.ip || 'hidden-mdns';
+      const port = c.port || '?';
+      const proto = (c.protocol || 'udp').toLowerCase();
+      return `${ip}:${port} (${proto})`;
+    };
+
+    const localType = localCand?.candidateType || 'unknown';
+    const remoteType = remoteCand?.candidateType || 'unknown';
+    const localAddr = formatCandAddr(localCand);
+    const remoteAddr = formatCandAddr(remoteCand);
+
+    // Thu thập tất cả các candidate-pair đã được WebRTC tạo ra để kiểm tra
+    const allPairs = [];
+    let hostPairsCount = 0;
+    let hostFailedOrBlocked = 0;
+    let srflxPairsCount = 0;
+    let srflxFailedOrBlocked = 0;
+
+    stats.forEach(report => {
+      if (report.type === 'candidate-pair') {
+        const l = stats.get(report.localCandidateId);
+        const r = stats.get(report.remoteCandidateId);
+        const lType = l?.candidateType || 'unknown';
+        const rType = r?.candidateType || 'unknown';
+        const isSelected = report.id === selectedPair.id;
+
+        if (lType === 'host' && rType === 'host') {
+          hostPairsCount++;
+          if (report.state !== 'succeeded') hostFailedOrBlocked++;
+        } else if (lType !== 'relay' && rType !== 'relay') {
+          srflxPairsCount++;
+          if (report.state !== 'succeeded') srflxFailedOrBlocked++;
+        }
+
+        allPairs.push({
+          isSelected,
+          state: report.state,
+          nominated: !!report.nominated,
+          localType: lType,
+          localAddr: formatCandAddr(l),
+          remoteType: rType,
+          remoteAddr: formatCandAddr(r),
+          rttMs: report.currentRoundTripTime != null ? Math.round(report.currentRoundTripTime * 1000) : null,
+          bytesSent: report.bytesSent || 0,
+          bytesReceived: report.bytesReceived || 0
+        });
+      }
+    });
+
+    // Sắp xếp đưa cặp đang được chọn lên đầu
+    allPairs.sort((a, b) => (b.isSelected ? 1 : 0) - (a.isSelected ? 1 : 0));
+
+    let explanation = '';
+    if (candidateType === 'host') {
+      explanation = 'Kết nối trực tiếp qua mạng nội bộ (LAN) thành công với độ ưu tiên cao nhất.';
+    } else if (candidateType === 'srflx' || candidateType === 'prflx') {
+      if (hostPairsCount > 0) {
+        explanation = `Các cặp LAN nội bộ (host ↔ host: ${hostPairsCount} cặp) không thông (có thể do mDNS .local bị chặn, khác subnet/VLAN hoặc AP Isolation trên Wi-Fi), nên WebRTC đục lỗ NAT qua STUN (${candidateType}).`;
+      } else {
+        explanation = 'Không có cặp LAN trực tiếp khả dụng, WebRTC kết nối trực tiếp xuyên NAT qua STUN.';
+      }
+    } else if (candidateType === 'relay') {
+      const reasons = [];
+      if (hostPairsCount > 0) {
+        reasons.push(`${hostPairsCount} cặp LAN (host ↔ host) không thông (thường do Wi-Fi công ty bật AP/Client Isolation cô lập thiết bị, khác VLAN, hoặc Windows Firewall chặn UDP nội bộ)`);
+      } else {
+        reasons.push('không ghép được cặp LAN (host ↔ host) tương thích (do ẩn IP bằng mDNS .local hoặc khác hệ IPv4/IPv6)');
+      }
+      if (srflxPairsCount > 0) {
+        reasons.push(`${srflxPairsCount} cặp STUN (srflx/prflx) không đục lỗ NAT được (do Router công ty chặn NAT Hairpinning/Loopback hoặc dùng Firewall/NAT đối xứng)`);
+      }
+      explanation = `Lý do phải đi qua TURN: ${reasons.join('; ')}.`;
+    }
+
+    const detailsPayload = {
+      iceDiagnostics: {
+        selectedType: candidateType,
+        selectedLabel: typeLabel,
+        local: `[${localType}] ${localAddr}`,
+        remote: `[${remoteType}] ${remoteAddr}`,
+        rttMs,
+        explanation,
+        pairs: allPairs
+      }
+    };
+
+    this.onLog(
+      'ICE',
+      `🎯 Đường truyền được chọn: ${typeLabel} ([${localType}] ${localAddr} ⇄ [${remoteType}] ${remoteAddr}${rttMs != null ? `, RTT: ${rttMs}ms` : ''})`,
+      detailsPayload
+    );
+
+    if (explanation) {
+      this.onLog('ICE', `💡 Chẩn đoán đường truyền: ${explanation}`, detailsPayload);
     }
   }
 
@@ -419,5 +603,6 @@ export class PeerManager {
     this.iceCandidateQueue = [];
     this.setupStartTime = null;
     this.setupDurationMs = null;
+    this._lastLoggedPairId = null;
   }
 }

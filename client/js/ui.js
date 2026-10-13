@@ -309,7 +309,7 @@ export class UIController {
   }
 
   /**
-   * Hiển thị Modal chi tiết (SDP / Candidate / Raw Data)
+   * Hiển thị Modal chi tiết (SDP / Candidate / ICE Diagnostics / Raw Data)
    */
   showDetailsModal(title, data) {
     if (!this.els.modalDetails) return;
@@ -322,6 +322,53 @@ export class UIController {
         <div class="sdp-view-container">
           <p class="text-muted mb-2">Loại SDP: <strong>${escapeHtml(data.type || 'N/A')}</strong></p>
           <pre class="code-block sdp-code"><code>${highlightSdp(data.sdp)}</code></pre>
+        </div>
+      `;
+    } else if (data.iceDiagnostics) {
+      const diag = data.iceDiagnostics;
+      const rows = (diag.pairs || []).map(p => {
+        const badge = p.isSelected
+          ? '✅ ĐANG DÙNG'
+          : p.state === 'succeeded'
+            ? '✓ succeeded'
+            : p.state === 'failed'
+              ? '❌ failed'
+              : `⏳ ${p.state || 'waiting'}`;
+        return `
+          <tr style="${p.isSelected ? 'font-weight:bold;background:rgba(16,185,129,0.12);' : ''}">
+            <td>${escapeHtml(badge)}</td>
+            <td><code>[${escapeHtml(p.localType)}]</code> ${escapeHtml(p.localAddr)}</td>
+            <td><code>[${escapeHtml(p.remoteType)}]</code> ${escapeHtml(p.remoteAddr)}</td>
+            <td>${p.rttMs != null ? `${p.rttMs} ms` : '-'}</td>
+            <td>↑${formatBytes(p.bytesSent)} / ↓${formatBytes(p.bytesReceived)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      contentHtml = `
+        <div class="candidate-view-container">
+          <table class="table-compact mb-3">
+            <tr><td>Đường truyền đang chọn</td><td><strong>${escapeHtml(diag.selectedLabel)}</strong></td></tr>
+            <tr><td>Local Candidate</td><td><code>${escapeHtml(diag.local)}</code></td></tr>
+            <tr><td>Remote Candidate</td><td><code>${escapeHtml(diag.remote)}</code></td></tr>
+            <tr><td>Độ trễ (RTT)</td><td>${diag.rttMs != null ? `${diag.rttMs} ms` : 'N/A'}</td></tr>
+            <tr><td>Chẩn đoán</td><td>${escapeHtml(diag.explanation || '')}</td></tr>
+          </table>
+          <p class="text-muted mb-2"><strong>Danh sách tất cả các cặp ICE Candidate đã thử nghiệm (${(diag.pairs || []).length} cặp):</strong></p>
+          <div style="overflow-x:auto;">
+            <table class="table-compact mb-3" style="width:100%;font-size:0.85rem;">
+              <thead>
+                <tr>
+                  <th>Trạng thái</th>
+                  <th>Máy này (Local)</th>
+                  <th>Đối tác (Remote)</th>
+                  <th>RTT</th>
+                  <th>Lưu lượng</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
         </div>
       `;
     } else if (data.candidate && typeof data.candidate === 'string') {
