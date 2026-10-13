@@ -429,12 +429,12 @@ export class PeerManager {
       if (localType === 'relay' || remoteType === 'relay') {
         candidateType = 'relay';
         typeLabel = 'Qua TURN';
+      } else if (localType === 'prflx' || remoteType === 'prflx') {
+        candidateType = 'prflx';
+        typeLabel = 'Peer Reflexive (prflx)';
       } else if (localType === 'srflx' || remoteType === 'srflx') {
         candidateType = 'srflx';
         typeLabel = 'Public IP qua STUN';
-      } else if (localType === 'prflx' || remoteType === 'prflx') {
-        candidateType = 'prflx';
-        typeLabel = 'Peer Reflexive';
       } else if (localType === 'host' && remoteType === 'host') {
         candidateType = 'host';
         typeLabel = 'Mạng nội bộ (LAN)';
@@ -537,11 +537,13 @@ export class PeerManager {
     let explanation = '';
     if (candidateType === 'host') {
       explanation = 'Kết nối trực tiếp qua mạng nội bộ (LAN) thành công với độ ưu tiên cao nhất.';
-    } else if (candidateType === 'srflx' || candidateType === 'prflx') {
+    } else if (candidateType === 'prflx') {
+      explanation = `Một bên dùng NAT đối xứng (Symmetric NAT / 4G) đổi Port động khi gửi gói kiểm tra tới bên kia (Full/Address-Restricted Cone NAT). WebRTC phát hiện Port mới này trong lúc bắt tay và kết nối P2P trực tiếp qua Peer Reflexive (prflx) mà không cần qua TURN.`;
+    } else if (candidateType === 'srflx') {
       if (hostPairsCount > 0) {
-        explanation = `Các cặp LAN nội bộ (host ↔ host: ${hostPairsCount} cặp) không thông (có thể do mDNS .local bị chặn, khác subnet/VLAN hoặc AP Isolation trên Wi-Fi), nên WebRTC đục lỗ NAT qua STUN (${candidateType}).`;
+        explanation = `Các cặp LAN nội bộ (host ↔ host: ${hostPairsCount} cặp) không thông (có thể do mDNS .local bị chặn, khác subnet/VLAN hoặc AP Isolation trên Wi-Fi), nên WebRTC đục lỗ NAT qua STUN (srflx).`;
       } else {
-        explanation = 'Không có cặp LAN trực tiếp khả dụng, WebRTC kết nối trực tiếp xuyên NAT qua STUN.';
+        explanation = 'Hai thiết bị khác mạng nội bộ, WebRTC đục lỗ NAT trực tiếp thành công qua STUN (srflx).';
       }
     } else if (candidateType === 'relay') {
       const reasons = [];
