@@ -534,30 +534,6 @@ export class PeerManager {
     // Sắp xếp đưa cặp đang được chọn lên đầu
     allPairs.sort((a, b) => (b.isSelected ? 1 : 0) - (a.isSelected ? 1 : 0));
 
-    let explanation = '';
-    if (candidateType === 'host') {
-      explanation = 'Kết nối trực tiếp qua mạng nội bộ (LAN) thành công với độ ưu tiên cao nhất.';
-    } else if (candidateType === 'prflx') {
-      explanation = `Một bên dùng NAT đối xứng (Symmetric NAT / 4G) đổi Port động khi gửi gói kiểm tra tới bên kia (Full/Address-Restricted Cone NAT). WebRTC phát hiện Port mới này trong lúc bắt tay và kết nối P2P trực tiếp qua Peer Reflexive (prflx) mà không cần qua TURN.`;
-    } else if (candidateType === 'srflx') {
-      if (hostPairsCount > 0) {
-        explanation = `Các cặp LAN nội bộ (host ↔ host: ${hostPairsCount} cặp) không thông (có thể do mDNS .local bị chặn, khác subnet/VLAN hoặc AP Isolation trên Wi-Fi), nên WebRTC đục lỗ NAT qua STUN (srflx).`;
-      } else {
-        explanation = 'Hai thiết bị khác mạng nội bộ, WebRTC đục lỗ NAT trực tiếp thành công qua STUN (srflx).';
-      }
-    } else if (candidateType === 'relay') {
-      const reasons = [];
-      if (hostPairsCount > 0) {
-        reasons.push(`${hostPairsCount} cặp LAN (host ↔ host) không thông (thường do Wi-Fi công ty bật AP/Client Isolation cô lập thiết bị, khác VLAN, hoặc Windows Firewall chặn UDP nội bộ)`);
-      } else {
-        reasons.push('không ghép được cặp LAN (host ↔ host) tương thích (do ẩn IP bằng mDNS .local hoặc khác hệ IPv4/IPv6)');
-      }
-      if (srflxPairsCount > 0) {
-        reasons.push(`${srflxPairsCount} cặp STUN (srflx/prflx) không đục lỗ NAT được (do Router công ty chặn NAT Hairpinning/Loopback hoặc dùng Firewall/NAT đối xứng)`);
-      }
-      explanation = `Lý do phải đi qua TURN: ${reasons.join('; ')}.`;
-    }
-
     const detailsPayload = {
       iceDiagnostics: {
         selectedType: candidateType,
@@ -565,7 +541,6 @@ export class PeerManager {
         local: `[${localType}] ${localAddr}`,
         remote: `[${remoteType}] ${remoteAddr}`,
         rttMs,
-        explanation,
         pairs: allPairs
       }
     };
@@ -575,10 +550,6 @@ export class PeerManager {
       `🎯 Đường truyền được chọn: ${typeLabel} ([${localType}] ${localAddr} ⇄ [${remoteType}] ${remoteAddr}${rttMs != null ? `, RTT: ${rttMs}ms` : ''})`,
       detailsPayload
     );
-
-    if (explanation) {
-      this.onLog('ICE', `💡 Chẩn đoán đường truyền: ${explanation}`, detailsPayload);
-    }
   }
 
   /**

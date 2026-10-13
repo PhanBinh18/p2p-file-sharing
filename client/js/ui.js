@@ -352,7 +352,6 @@ export class UIController {
             <tr><td>Local Candidate</td><td><code>${escapeHtml(diag.local)}</code></td></tr>
             <tr><td>Remote Candidate</td><td><code>${escapeHtml(diag.remote)}</code></td></tr>
             <tr><td>Độ trễ (RTT)</td><td>${diag.rttMs != null ? `${diag.rttMs} ms` : 'N/A'}</td></tr>
-            <tr><td>Chẩn đoán</td><td>${escapeHtml(diag.explanation || '')}</td></tr>
           </table>
           <p class="text-muted mb-2"><strong>Danh sách tất cả các cặp ICE Candidate đã thử nghiệm (${(diag.pairs || []).length} cặp):</strong></p>
           <div style="overflow-x:auto;">
