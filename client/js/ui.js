@@ -439,10 +439,10 @@ export class UIController {
   /**
    * Cập nhật thanh tiến trình truyền file (P2P hoặc Relay)
    */
-  updateTransferProgress({ mode = 'p2p', role, fileName, percentage, speedBytesPerSec, loaded, total, sentBytes, totalBytes }) {
+  updateTransferProgress({ mode = 'p2p', role, fileName, percentage, speedBytesPerSec, loaded, total, sentBytes, receivedBytes, totalBytes }) {
     this.els.transferProgressCard.classList.remove('hidden');
-    const bytesDone = loaded != null ? loaded : sentBytes;
-    const bytesTotal = total != null ? total : totalBytes;
+    const bytesDone = loaded ?? sentBytes ?? receivedBytes ?? 0;
+    const bytesTotal = total ?? totalBytes ?? 0;
 
     const roleText = role === 'sender' || role === 'uploader' ? 'Đang gửi' : 'Đang nhận';
     const modeText = mode === 'p2p' ? 'P2P (WebRTC)' : 'Server Relay';

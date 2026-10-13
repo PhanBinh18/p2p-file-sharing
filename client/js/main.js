@@ -202,7 +202,13 @@ class App {
       onLog: (tag, msg, details) => this.ui.addLog(tag, msg, details),
       onStatsUpdate: (stats) => this.ui.updateConnectionStats(stats),
       onConnectionStateChange: (state, errorMsg) => {
-        if (state === 'failed') {
+        if (state === 'disconnected') {
+          this.ui.showToast('Kết nối P2P đang chập chờn, đang chờ khôi phục...', 'warning', 4000);
+        } else if (state === 'failed') {
+          if (this.p2pTransfer) {
+            this.p2pTransfer.handleDisconnect(errorMsg);
+          }
+          this.ui.hideTransferProgress();
           this.ui.showToast(errorMsg || 'Kết nối WebRTC thất bại.', 'error', 6000);
         }
       },
@@ -210,6 +216,10 @@ class App {
         this._onWebRtcConnected(dc, setupDurationMs);
       },
       onDataChannelClose: () => {
+        if (this.p2pTransfer) {
+          this.p2pTransfer.handleDisconnect('DataChannel đã bị đóng giữa chừng.');
+        }
+        this.ui.hideTransferProgress();
         this.ui.showToast('DataChannel đã bị ngắt kết nối', 'warning');
       }
     });
@@ -235,7 +245,10 @@ class App {
       onLog: (tag, msg, details) => this.ui.addLog(tag, msg, details),
       onProgress: (prog) => this.ui.updateTransferProgress({ mode: 'p2p', ...prog }),
       onComplete: (res) => this.ui.showTransferResult(res),
-      onError: (err) => this.ui.showToast(err.message, 'error'),
+      onError: (err) => {
+        this.ui.hideTransferProgress();
+        this.ui.showToast(err.message, 'error');
+      },
       onRequestAccept: ({ meta, accept, reject }) => {
         this.ui.showFileRequestModal(meta, (accepted) => {
           if (accepted) accept();
@@ -401,6 +414,7 @@ class App {
       try {
         await this.p2pTransfer.sendFile(this.selectedFile, this.selectedFileSha256);
       } catch (err) {
+        this.ui.hideTransferProgress();
         this.ui.showToast(err.message, 'error');
       }
     });
@@ -411,6 +425,7 @@ class App {
       try {
         await this.relayTransfer.uploadFile(this.selectedFile, this.selectedFileSha256);
       } catch (err) {
+        this.ui.hideTransferProgress();
         this.ui.showToast(err.message, 'error');
       }
     });

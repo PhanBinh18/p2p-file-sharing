@@ -5,11 +5,11 @@
 import { sha256, hashFile } from './hash.js';
 import { uuidv4, now } from './util.js';
 
-// Các hằng số theo quy ước ở mục 5 và mục 6 của plan_client.md
+// Các hằng số tối ưu chống nghẽn bộ đệm SCTP trên mạng di động / TURN Relay
 export const CHUNK_SIZE = 16384;             // 16 KiB
-export const READ_BLOCK_SIZE = 1024 * 1024;  // 1 MiB khối đọc file
-export const HIGH_WATER = 1024 * 1024;       // 1 MiB ngưỡng đệm tối đa
-export const LOW_WATER = 256 * 1024;         // 256 KiB ngưỡng đệm hồi phục
+export const READ_BLOCK_SIZE = 256 * 1024;   // 256 KiB khối đọc file
+export const HIGH_WATER = 256 * 1024;        // 256 KiB ngưỡng đệm tối đa
+export const LOW_WATER = 64 * 1024;          // 64 KiB ngưỡng đệm hồi phục
 export const MAX_FILE_SIZE = 104857600;      // 100 MiB giới hạn tối đa
 
 export class P2PFileTransfer {
@@ -49,15 +49,27 @@ export class P2PFileTransfer {
   _bindDataChannel(dc) {
     if (!dc) return;
     dc.binaryType = 'arraybuffer';
-    dc.bufferedAmountLowThreshold = LOW_WATER;
+    try {
+      dc.bufferedAmountLowThreshold = LOW_WATER;
+    } catch (e) {}
 
     dc.onmessage = (event) => {
       if (typeof event.data === 'string') {
         this._handleTextMessage(event.data);
       } else if (event.data instanceof ArrayBuffer) {
         this._handleBinaryChunk(event.data);
+      } else if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buf) => this._handleBinaryChunk(buf)).catch(() => {});
       }
     };
+
+    dc.addEventListener('close', () => {
+      this.handleDisconnect('Kênh truyền DataChannel đã bị đóng giữa chừng.');
+    });
+
+    dc.addEventListener('error', () => {
+      this.handleDisconnect('Lỗi kênh truyền DataChannel khi đang truyền dữ liệu.');
+    });
   }
 
   /**
@@ -163,6 +175,7 @@ export class P2PFileTransfer {
         id: fileId,
         file,
         meta,
+        sentBytes: 0,
         cancel: () => {
           isCancelled = true;
           try {
@@ -170,6 +183,11 @@ export class P2PFileTransfer {
           } catch (e) {}
           this._cleanUp();
           reject(new Error('Đã hủy gửi file'));
+        },
+        abort: (reason) => {
+          isCancelled = true;
+          this._cleanUp();
+          reject(new Error(reason || 'Kết nối P2P bị gián đoạn khi đang gửi file'));
         },
         onAccepted: async () => {
           if (isCancelled) return;
@@ -179,11 +197,12 @@ export class P2PFileTransfer {
             sendStartTime = now();
             let sentBytes = 0;
             let lastUiUpdate = 0;
+            let lastLoggedMilestone = 0;
 
             const fileSize = file.size;
             let offset = 0;
 
-            // Đọc file theo từng khối READ_BLOCK_SIZE (1 MB)
+            // Đọc file theo từng khối READ_BLOCK_SIZE (256 KiB)
             while (offset < fileSize) {
               if (isCancelled || !this.dc || this.dc.readyState !== 'open') {
                 throw new Error('Kết nối bị gián đoạn khi đang gửi');
@@ -199,9 +218,13 @@ export class P2PFileTransfer {
                   throw new Error('Kết nối bị gián đoạn khi đang gửi');
                 }
 
-                // Kiểm tra backpressure: nếu bufferedAmount > HIGH_WATER thì đợi bufferedamountlow
+                // Kiểm tra backpressure: nếu bufferedAmount > HIGH_WATER thì đợi xuống dưới LOW_WATER
                 if (this.dc.bufferedAmount > HIGH_WATER) {
                   await this._waitForBufferLow();
+                }
+
+                if (isCancelled || !this.dc || this.dc.readyState !== 'open') {
+                  throw new Error('Kết nối bị gián đoạn khi đang gửi');
                 }
 
                 const chunkEnd = Math.min(blockOffset + CHUNK_SIZE, blockBuffer.byteLength);
@@ -209,7 +232,19 @@ export class P2PFileTransfer {
 
                 this.dc.send(chunk);
                 sentBytes += chunk.byteLength;
+                if (this.currentSendSession) {
+                  this.currentSendSession.sentBytes = sentBytes;
+                }
                 blockOffset = chunkEnd;
+
+                const pct = Math.round((sentBytes / fileSize) * 100);
+                const milestone = Math.floor(pct / 25) * 25;
+                if (milestone >= 25 && milestone < 100 && milestone > lastLoggedMilestone) {
+                  lastLoggedMilestone = milestone;
+                  if (this.onLog) {
+                    this.onLog('XFER', `Đang gửi "${file.name}": đạt ${milestone}% (${sentBytes}/${fileSize} bytes)`);
+                  }
+                }
 
                 // Throttling cập nhật UI (~10 lần/s)
                 const currentTime = now();
@@ -224,7 +259,7 @@ export class P2PFileTransfer {
                       fileName: file.name,
                       sentBytes,
                       totalBytes: fileSize,
-                      percentage: Math.round((sentBytes / fileSize) * 100),
+                      percentage: pct,
                       speedBytesPerSec: speed
                     });
                   }
@@ -235,7 +270,7 @@ export class P2PFileTransfer {
             }
 
             // Gửi file-end sau khi đã gửi chunk cuối cùng
-            if (this.onLog) this.onLog('XFER', `Đã gửi hết bytes, gửi file-end (chờ xác nhận băm từ bên nhận)`);
+            if (this.onLog) this.onLog('XFER', `Đã gửi hết ${fileSize} bytes, gửi file-end (chờ xác nhận băm từ bên nhận)`);
             this.dc.send(JSON.stringify({ t: 'file-end', id: fileId }));
           } catch (err) {
             this._cleanUp();
@@ -274,15 +309,40 @@ export class P2PFileTransfer {
   }
 
   /**
-   * Đợi sự kiện bufferedamountlow trên DataChannel
+   * Đợi bộ đệm DataChannel rút xuống dưới ngưỡng LOW_WATER
+   * Kết hợp sự kiện bufferedamountlow và bộ kiểm tra dự phòng (tránh treo trên Safari/Mobile hoặc khi đóng kênh)
    */
   _waitForBufferLow() {
     return new Promise((resolve) => {
-      const onLow = () => {
-        this.dc.removeEventListener('bufferedamountlow', onLow);
+      if (!this.dc || this.dc.readyState !== 'open' || this.dc.bufferedAmount <= LOW_WATER) {
+        resolve();
+        return;
+      }
+
+      let done = false;
+      const dc = this.dc;
+
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearInterval(checkTimer);
+        try {
+          dc.removeEventListener('bufferedamountlow', finish);
+          dc.removeEventListener('close', finish);
+          dc.removeEventListener('error', finish);
+        } catch (e) {}
         resolve();
       };
-      this.dc.addEventListener('bufferedamountlow', onLow);
+
+      const checkTimer = setInterval(() => {
+        if (!this.dc || this.dc.readyState !== 'open' || this.dc.bufferedAmount <= LOW_WATER) {
+          finish();
+        }
+      }, 25);
+
+      dc.addEventListener('bufferedamountlow', finish);
+      dc.addEventListener('close', finish);
+      dc.addEventListener('error', finish);
     });
   }
 
@@ -307,12 +367,13 @@ export class P2PFileTransfer {
       chunks: [],
       receivedBytes: 0,
       startTime: null,
-      lastUiUpdate: 0
+      lastUiUpdate: 0,
+      lastLoggedMilestone: 0
     };
 
     // Nếu bật tự động nhận (chế độ so sánh tốc độ)
     if (this.autoAccept) {
-      if (this.onLog) this.onLog('XFER', `[Tự động nhận] Chấp nhận nhận file "${meta.name}"`);
+      if (this.onLog) this.onLog('XFER', `[Tự động nhận] Chấp nhận nhận file "${meta.name}" (${meta.size} bytes)`);
       this.dc.send(JSON.stringify({ t: 'file-accept', id: meta.id }));
       return;
     }
@@ -323,6 +384,7 @@ export class P2PFileTransfer {
         meta,
         accept: () => {
           if (this.currentReceiveSession && this.currentReceiveSession.meta.id === meta.id) {
+            if (this.onLog) this.onLog('XFER', `Chấp nhận nhận file "${meta.name}" (${meta.size} bytes)`);
             this.dc.send(JSON.stringify({ t: 'file-accept', id: meta.id }));
           }
         },
@@ -344,12 +406,25 @@ export class P2PFileTransfer {
     const session = this.currentReceiveSession;
     if (!session) return;
 
-    if (!session.startTime) {
+    const isFirstChunk = !session.startTime;
+    if (isFirstChunk) {
       session.startTime = now();
+      if (this.onLog) {
+        this.onLog('XFER', `Bắt đầu nhận luồng dữ liệu nhị phân của "${session.meta.name}"...`);
+      }
     }
 
     session.chunks.push(chunk);
     session.receivedBytes += chunk.byteLength;
+
+    const pct = Math.round((session.receivedBytes / session.meta.size) * 100);
+    const milestone = Math.floor(pct / 25) * 25;
+    if (milestone >= 25 && milestone < 100 && milestone > session.lastLoggedMilestone) {
+      session.lastLoggedMilestone = milestone;
+      if (this.onLog) {
+        this.onLog('XFER', `Đang nhận "${session.meta.name}": đạt ${milestone}% (${session.receivedBytes}/${session.meta.size} bytes)`);
+      }
+    }
 
     const currentTime = now();
     if (currentTime - session.lastUiUpdate > 100 || session.receivedBytes === session.meta.size) {
@@ -364,7 +439,7 @@ export class P2PFileTransfer {
           fileName: session.meta.name,
           receivedBytes: session.receivedBytes,
           totalBytes: session.meta.size,
-          percentage: Math.round((session.receivedBytes / session.meta.size) * 100),
+          percentage: pct,
           speedBytesPerSec: speed
         });
       }
@@ -398,13 +473,15 @@ export class P2PFileTransfer {
     }
 
     // Gửi kết quả file-result về bên gửi
-    this.dc.send(JSON.stringify({
-      t: 'file-result',
-      id: fileId,
-      ok,
-      sha256Received: computedHash,
-      recvMs
-    }));
+    try {
+      this.dc.send(JSON.stringify({
+        t: 'file-result',
+        id: fileId,
+        ok,
+        sha256Received: computedHash,
+        recvMs
+      }));
+    } catch (e) {}
 
     const result = {
       role: 'receiver',
@@ -436,6 +513,34 @@ export class P2PFileTransfer {
       if (this.onError) {
         this.onError(new Error('Đối tác đã hủy quá trình truyền file'));
       }
+    }
+  }
+
+  /**
+   * Xử lý khi kết nối P2P / DataChannel bị đứt đột ngột giữa chừng
+   */
+  handleDisconnect(reason = 'Mất kết nối P2P khi đang truyền file') {
+    if (!this.isTransferring) return;
+
+    if (this.currentSendSession) {
+      const { file, sentBytes = 0 } = this.currentSendSession;
+      const pct = file?.size ? Math.round((sentBytes / file.size) * 100) : 0;
+      if (this.onLog) {
+        this.onLog('XFER', `❌ Quá trình gửi "${file?.name}" bị ngắt tại ${pct}% (${sentBytes}/${file?.size} bytes)`);
+      }
+      this.currentSendSession.abort(reason);
+    } else if (this.currentReceiveSession) {
+      const { meta, receivedBytes = 0 } = this.currentReceiveSession;
+      const pct = meta?.size ? Math.round((receivedBytes / meta.size) * 100) : 0;
+      if (this.onLog) {
+        this.onLog('XFER', `❌ Quá trình nhận "${meta?.name}" bị ngắt tại ${pct}% (${receivedBytes}/${meta?.size} bytes)`);
+      }
+      this._cleanUp();
+      if (this.onError) {
+        this.onError(new Error(`${reason} (Đã nhận ${pct}% dữ liệu)`));
+      }
+    } else {
+      this._cleanUp();
     }
   }
 

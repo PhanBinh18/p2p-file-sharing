@@ -20,6 +20,8 @@ export class PeerManager {
     this.setupStartTime = null;
     this.setupDurationMs = null;
     this.activeCandidateType = null;
+    this.hasConnected = false;
+    this._failureHandled = false;
   }
 
   /**
@@ -61,6 +63,8 @@ export class PeerManager {
 
     this.pc = new RTCPeerConnection({ iceServers });
     this.iceCandidateQueue = [];
+    this.hasConnected = false;
+    this._failureHandled = false;
 
     // Bắt đầu timer 15 giây theo dõi kết nối
     this._startConnectionTimer();
@@ -89,25 +93,43 @@ export class PeerManager {
 
     // Theo dõi trạng thái ICE Connection
     this.pc.oniceconnectionstatechange = () => {
+      if (!this.pc) return;
       const state = this.pc.iceConnectionState;
       if (this.onLog) this.onLog('ICE', `Trạng thái kết nối ICE đổi thành: ${state}`);
-      if (state === 'failed') {
+      if (state === 'connected' || state === 'completed') {
+        this.hasConnected = true;
+        this._failureHandled = false;
+      } else if (state === 'disconnected') {
+        if (this.onLog) {
+          this.onLog('ICE', '⚠️ Kết nối mạng bị gián đoạn tạm thời, đang chờ khôi phục...');
+        }
+        if (this.isHost && typeof this.pc.restartIce === 'function') {
+          try {
+            this.pc.restartIce();
+          } catch (e) {}
+        }
+      } else if (state === 'failed') {
         this._handleConnectionFailure();
       }
     };
 
     // Theo dõi Connection State
     this.pc.onconnectionstatechange = () => {
+      if (!this.pc) return;
       const state = this.pc.connectionState;
       if (this.onLog) this.onLog('PC', `Trạng thái kết nối đổi thành: ${state}`);
-      if (this.onConnectionStateChange) {
-        this.onConnectionStateChange(state);
-      }
       if (state === 'connected') {
+        this.hasConnected = true;
+        this._failureHandled = false;
         this._clearConnectionTimer();
         this._startStatsPolling();
+        if (this.onConnectionStateChange) {
+          this.onConnectionStateChange(state);
+        }
       } else if (state === 'failed') {
         this._handleConnectionFailure();
+      } else if (this.onConnectionStateChange) {
+        this.onConnectionStateChange(state);
       }
     };
 
@@ -128,6 +150,8 @@ export class PeerManager {
     this.dc.binaryType = 'arraybuffer';
 
     this.dc.onopen = () => {
+      this.hasConnected = true;
+      this._failureHandled = false;
       this._clearConnectionTimer();
       if (this.setupStartTime && !this.setupDurationMs) {
         this.setupDurationMs = performance.now() - this.setupStartTime;
@@ -260,7 +284,7 @@ export class PeerManager {
     this._clearConnectionTimer();
     this.connectTimeoutTimer = setTimeout(() => {
       if (!this.dc || this.dc.readyState !== 'open') {
-        this._handleConnectionFailure('Quá thời gian 15 giây chưa thể thiết lập kết nối trực tiếp.');
+        this._handleConnectionFailure('Quá thời gian 15 giây chưa thể thiết lập kết nối P2P.');
       }
     }, 15000);
   }
@@ -273,8 +297,19 @@ export class PeerManager {
   }
 
   _handleConnectionFailure(customMsg) {
+    if (this._failureHandled) return;
+    this._failureHandled = true;
     this._clearConnectionTimer();
-    const reason = customMsg || 'Không thể kết nối trực tiếp (có thể do NAT đối xứng/mạng 4G – cần TURN).';
+
+    let reason = customMsg;
+    if (!reason) {
+      if (this.hasConnected) {
+        reason = 'Kết nối P2P bị ngắt giữa chừng (do đối tác rớt mạng, tắt màn hình/chuyển ứng dụng trên điện thoại hoặc nghẽn đường truyền).';
+      } else {
+        reason = 'Không thể thiết lập kết nối P2P (có thể do tường lửa hoặc NAT đối xứng).';
+      }
+    }
+
     if (this.onLog) this.onLog('PC', `❌ Cảnh báo: ${reason}`);
     if (this.onConnectionStateChange) {
       this.onConnectionStateChange('failed', reason);
